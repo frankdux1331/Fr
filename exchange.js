@@ -1,6 +1,7 @@
 const express = require("express");
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
+const fetch = require("node-fetch");
 
 const app = express();
 app.use(express.json());
@@ -12,38 +13,16 @@ db.serialize(() => {
   db.run("CREATE TABLE orders (id INTEGER PRIMARY KEY, user TEXT, type TEXT, amount REAL, price REAL)");
 });
 
-// Funciones
-function registerUser(name) {
-  db.run("INSERT INTO users (name, balance) VALUES (?, ?)", [name, 100]);
-}
-
-function placeOrder(user, type, amount, price) {
-  db.run("INSERT INTO orders (user, type, amount, price) VALUES (?, ?, ?, ?)", [user, type, amount, price]);
-  matchOrders();
-}
-
-function matchOrders() {
-  db.all("SELECT * FROM orders ORDER BY price ASC", (err, orders) => {
-    if (orders.length > 1) {
-      const buy = orders.find(o => o.type === "buy");
-      const sell = orders.find(o => o.type === "sell");
-      if (buy && sell && buy.price >= sell.price) {
-        const amount = Math.min(buy.amount, sell.amount);
-        console.log(`Match: ${buy.user} compra ${amount} de ${sell.user} a ${sell.price}`);
-        db.run("UPDATE users SET balance = balance - ? WHERE name = ?", [amount * sell.price, buy.user]);
-        db.run("UPDATE users SET balance = balance + ? WHERE name = ?", [amount * sell.price, sell.user]);
-        db.run("DELETE FROM orders WHERE id = ?", [buy.id]);
-        db.run("DELETE FROM orders WHERE id = ?", [sell.id]);
-      }
-    }
+// Registro de usuario
+app.post("/register", (req, res) => {
+  const { name } = req.body;
+  db.run("INSERT INTO users (name, balance) VALUES (?, ?)", [name, 100], function(err) {
+    if (err) return res.json({ error: err.message });
+    res.json({ status: "Usuario registrado", id: this.lastID });
   });
-}
-
-// Rutas
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
 });
 
+// Consultar balance
 app.get("/balance/:user", (req, res) => {
   db.get("SELECT balance FROM users WHERE name = ?", [req.params.user], (err, row) => {
     if (row) res.json({ balance: row.balance });
@@ -51,13 +30,43 @@ app.get("/balance/:user", (req, res) => {
   });
 });
 
-app.post("/order", (req, res) => {
-  const { user, type, amount, price } = req.body;
-  placeOrder(user, type, amount, price);
-  res.json({ status: "Orden registrada" });
+// Precios en tiempo real desde CoinGecko
+app.get("/price/:symbol", async (req, res) => {
+  try {
+    const symbol = req.params.symbol.toLowerCase();
+    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${symbol}&vs_currencies=usd`;
+    const response = await fetch(url);
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    res.json({ error: "No se pudo obtener el precio" });
+  }
 });
 
-// Puerto dinámico para Render
+// Crear orden
+app.post("/order", (req, res) => {
+  const { user, type, amount, price } = req.body;
+  db.run("INSERT INTO orders (user, type, amount, price) VALUES (?, ?, ?, ?)", 
+    [user, type, amount, price], 
+    function(err) {
+      if (err) return res.json({ error: err.message });
+      res.json({ status: "Orden registrada", id: this.lastID });
+    });
+});
+
+// Libro de órdenes
+app.get("/orders", (req, res) => {
+  db.all("SELECT * FROM orders", (err, rows) => {
+    if (err) res.status(500).json({ error: err.message });
+    else res.json(rows);
+  });
+});
+
+// Interfaz principal
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
+
 app.listen(process.env.PORT || 3000, () => {
   console.log("Exchange corriendo en Render");
 });
